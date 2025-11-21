@@ -1,7 +1,14 @@
-library(dplyr)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
 library(ggplot2)
-library(pheatmap)
+library(dplyr)
 library(DESeq2)
+library(qs)
+library(DT)
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
 source("R/functions.R")
 source("R/plotPCA2.R")
 source("R/volcano.R")
@@ -64,7 +71,8 @@ colData_intestine <- colData_intestine |>
     genotype = factor(genotype),
     group    = factor(group),
     tissue   = droplevels(factor(tissue)),
-    replicate = factor(replicate)
+    replicate = factor(replicate),
+    age_sex = interaction(sex, age)
   )
 
 table(colData_intestine$tissue)
@@ -80,7 +88,7 @@ dds_int <-
   # High level step 1: set up the object structure
   DESeqDataSetFromMatrix(countData = mat_intestine,
                          colData = colData_intestine,
-                         design= ~ 1 + genotype
+                         design= ~ 1 + genotype + sex + age
   ) |>
   # High level step 2: "do the math" (--> Ali!)
   #                    size factors factors,
@@ -99,7 +107,19 @@ res_int_genotype <-
           name="genotype_nmrhas2_vs_creer"
   )
 
+res_int_sex <-
+  results(dds_int,
+          name="sex_male_vs_female"
+  )
+
+res_int_age <-
+  results(dds_int,
+          name="age_young_vs_old"
+  )
+
 saveRDS(res_int_genotype, file="res_int_genotype.rds")
+saveRDS(res_int_sex, file="res_int_sex.rds")
+saveRDS(res_int_age, file="res_int_age.rds")
 
 dt <- DT::datatable(
   res_int_genotype |> as.data.frame() |>
@@ -108,8 +128,6 @@ dt <- DT::datatable(
 
   options=list(scrollY="500px")
 )
-
-# convert numeric columns to scientific notation
 dt <- dt |>
   DT::formatSignif(
     purrr::map_lgl(dt$x$data, is.numeric),
@@ -118,6 +136,27 @@ dt <- dt |>
 
 ## A Bold Try: Model the Data With Genotype Onl
 dt
+
+
+dt_age <- DT::datatable(
+  res_int_age |> as.data.frame() |>
+    dplyr::filter(!is.na(padj), padj <= 0.05) |>
+    dplyr::arrange(padj),
+
+  options=list(scrollY="500px")
+)
+
+dt_age <- dt_age |>
+  DT::formatSignif(
+    purrr::map_lgl(dt_age$x$data, is.numeric),
+    digits=2
+  )
+
+## A Bold Try: Model the Data With Genotype Onl
+dt_age
+
+# convert numeric columns to scientific notation
+
 ##boxplots of raw and normalized counts for all samples
 library(dplyr)
 library(reshape2)
@@ -163,34 +202,12 @@ saveRDS(vsd,file="vsd.rds")
 ## What Drives the Structure?
 #The unlabelled dataset shows some very clear structures:
 plotPCA2(vsd,
-         intgroup = "genotype",
+         intgroup = "group",
          color = group,
-         fill = age,
-         shape = tissue,
+         shape = sex,
          ntop=500,
          PCs=c(x=1,y=2))
 
-library(DESeq2)
-library(ggplot2)
-
-# Extract PCA data
-pca_df <- plotPCA(vsd, intgroup = c("sex", "age", "genotype", "group"),
-                  returnData = TRUE)
-
-# Build PCA plot with multiple aesthetics
-ggplot(pca_df, aes(
-  x = PC1,
-  y = PC2,
-  color = sex,       # color by sex
-  shape = group,    # shape by group
-)) +
-  geom_point(size = 4, stroke = 1)  +  # shapes that can be filled
-  labs(
-    title = "PCA colored by sex, shaped by tissue, filled by age",
-    x = paste0("PC1 (", round(attr(pca_df, "percentVar")[1] * 100), "% variance)"),
-    y = paste0("PC2 (", round(attr(pca_df, "percentVar")[2] * 100), "% variance)")
-  ) +
-  theme_classic()
 
 # Convert results to a data frame (important!)
 res_df <- as.data.frame(res_int_genotype)
@@ -207,11 +224,11 @@ write.csv(
 library(dplyr)
 library(tibble)
 
-# Prepare DESeq2 results
+# Prepare DESeq2 results genotype
 df_volcano <- res_int_genotype |>
   as.data.frame() |>
   rownames_to_column("gene") |>
-  dplyr::select(gene, log2FoldChange, pvalue)
+  dplyr::select(gene, log2FoldChange, padj)
 
 # Plot volcano
 volcano(
@@ -223,6 +240,37 @@ volcano(
   plotTheme = 0
 )
 
+# Prepare DESeq2 results sex
+df_volcano <- res_int_sex |>
+  as.data.frame() |>
+  rownames_to_column("gene") |>
+  dplyr::select(gene, log2FoldChange, padj)
+
+# Plot volcano
+volcano(
+  df = df_volcano,
+  use_cols = c(1, 2, 3),     # gene, log2 FC, p-value
+  lfc_thrsh = 1,
+  p_thrsh = 0.05,
+  label.show = T,
+  plotTheme = 0
+)
+
+# Prepare DESeq2 results age
+df_volcano <- res_int_age |>
+  as.data.frame() |>
+  rownames_to_column("gene") |>
+  dplyr::select(gene, log2FoldChange, padj)
+
+# Plot volcano
+volcano(
+  df = df_volcano,
+  use_cols = c(1, 2, 3),     # gene, log2 FC, p-value
+  lfc_thrsh = 1,
+  p_thrsh = 0.05,
+  label.show = T,
+  plotTheme = 0
+)
 ##ORA and GSEA enrichment
 
 uni_genes <- results(dds_int) |>
@@ -264,14 +312,14 @@ ego_result_dn <- enrichGO(
   readable = TRUE
 )
 
-DT::datatable(head(ego_result_dn))
+DT::datatable(ego_result_dn|>data.frame())
 
 # Visualizations
 # x="Count"/"GeneRatio", color="p.adjust"/"qvalue", size="GeneRatio"/"Count"
 
 dotplot(ego_result_up, showCategory=10) +
   ggtitle("GO Enrichment Analysis - Upregulated Genes : Dotplot")
-dotplot(ego_result_dn, showCategory=10) +
+dotplot(ego_result_dn, showCategory=20) +
   ggtitle("GO Enrichment Analysis - Downregulated Genes : Dotplot")
 
 barplot(ego_result_up, showCategory=10) +
